@@ -201,12 +201,18 @@ void EtherMacPFC::handleUpperPacket(Packet *packet)
     //EV_INFO << "!!!ind: " << ind << "\n";
     // 统计发送的包的总数
     router->total_packet_count++;
-    // 首先判断是否丢包
+    // 首先判断是否应该丢包
     if (router->CheckIngressAdmission(ind, 0, packetsize) && router->CheckEgressAdmission(ind, 0, packetsize)){           // Admission control
         router->UpdateIngressAdmission(ind, 0, packetsize);
         router->UpdateEgressAdmission(ind, 0, packetsize);
     }else{
         router->drop_packet_count++; // TODO 重新设计Drop
+        numDroppedBitError++;
+        PacketDropDetails details;
+        details.setReason(INCORRECTLY_RECEIVED);
+        emit(packetDroppedSignal, packet, &details);
+        delete packet;
+        return;
     }
     // 判断是否发送pause
     if (router->CheckShouldPause(ind,0))
