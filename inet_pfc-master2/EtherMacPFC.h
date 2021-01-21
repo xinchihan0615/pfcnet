@@ -17,6 +17,7 @@
 #define _ETHERMACPFC_H_
 
 #include "inet/linklayer/ethernet/EtherMac.h"
+#include <map>
 using namespace omnetpp;
 using namespace inet;
 
@@ -32,12 +33,16 @@ protected:
     int64_t queue_threshold;
     int pause_time = 0;
     bool pause = false;
+public:
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> msg_map;
 
 protected:
     virtual void initialize(int stage) override;
     virtual void handleMessageWhenUp(cMessage *msg) override;
     virtual void handleUpperPacket(Packet *packet) override;
     virtual void sendPause(PFC_Control Opcode);
+    //virtual void startFrameTransmission() override;
+    //virtual void processReceivedDataFrame(Packet *packet);
     bool isPaused() { return pause; }
     MacAddress findUpstream();
 };
