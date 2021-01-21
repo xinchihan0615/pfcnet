@@ -24,6 +24,17 @@
 #include "ingressTag_m.h"
 #include "RouterPFC.h"
 
+#include "inet/common/IProtocolRegistrationListener.h"
+#include "inet/common/ProtocolTag_m.h"
+#include "inet/linklayer/common/Ieee802Ctrl.h"
+#include "inet/linklayer/common/InterfaceTag_m.h"
+#include "inet/linklayer/ethernet/EtherEncap.h"
+#include "inet/linklayer/ethernet/EtherFrame_m.h"
+#include "inet/linklayer/ethernet/EtherMac.h"
+#include "inet/linklayer/ethernet/EtherPhyFrame_m.h"
+#include "inet/linklayer/ethernet/Ethernet.h"
+#include "inet/networklayer/common/InterfaceEntry.h"
+
 
 Define_Module(EtherMacPFC);
 
@@ -63,18 +74,22 @@ void EtherMacPFC::sendPause(PFC_Control Opcode) {
 
     if (Opcode == PFC_PAUSE && !pause) {
         ctrl -> setPauseUnits(pause_time);
-        EV_INFO << "Sending Pause Frame \n";
+        EV_INFO << "!!!Sending Pause Frame \n";
         pause = true;
     }
 
     else {
         if (Opcode == PFC_RESUME && pause) {
             ctrl -> setPauseUnits(0);
-            EV_INFO << "Sending Resume Frame \n";
+            EV_INFO << "!!!Sending Resume Frame \n";
             pause = false;
         }
         // The rest cases that no operation should be done
-        else return;
+    else {
+            EV_INFO << "!!!Fuck \n";
+            EV_INFO <<Opcode<< "!!!Fuck \n";
+            return;
+        }
     }
 
     msg -> setControlInfo(ctrl);
@@ -85,30 +100,39 @@ void EtherMacPFC::handleMessageWhenUp(cMessage *msg)
 {
     auto *eth = getParentModule();
 
-//    EV_INFO << "EtherMac" << "\n";
-//    EV_INFO << "Queue Threshold: " << queue_threshold << "\n";
 
     if (channelsDiffer)
         readChannelParameters(true);
 
     printState();
     ingressTag *ingress;
-//    if (!packet->findTag<ingressTag>()) {
-//        ingress = packet->addTag<ingressTag>();
-//        ingress->setIngressPort(-1);
-//    }
-//    else {
-//        ingress = packet->getTag<ingressTag>();
-//    }
+
 
     // some consistency check
     if (!duplexMode && transmitState == TRANSMITTING_STATE && receiveState != RX_IDLE_STATE)
         throw cRuntimeError("Inconsistent state -- transmitting and receiving at the same time");
 
-//    EV_INFO << "Packet Arriving in " << msg->getArrivalGateId() <<" UpperLayer: " << upperLayerInGateId \
-//            << " PhysicalIn: " << physInGate << "\n";
+    EV_INFO << "^^^Packet Arriving in " << msg->getArrivalGateId() <<" UpperLayer: " << upperLayerInGateId \
+            << " PhysicalIn: " << physInGate << "\n";
     if (msg->isSelfMessage())
+    {
+        // 如果收到消息完成的信号,就释放入端口和出端口的内存
+        if(msg->getKind() == ENDTRANSMISSION)
+        {
+            auto *eth = getParentModule();
+            auto *parent = eth->getParentModule();
+            RouterPFC *router = dynamic_cast<RouterPFC *>(parent);
+            uint32_t msg_id = msg->getId();
+            std::pair<uint32_t, uint32_t> ind_packetSize_map;
+            ind_packetSize_map = msg_map[msg_id];
+            uint32_t ind = ind_packetSize_map.first;
+            uint32_t packetsize = ind_packetSize_map.second;
+            router->RemoveFromIngressAdmission(ind, 0, packetsize);
+            router->RemoveFromIngressAdmission(ind, 0, packetsize);
+            msg_map.erase(msg_id);
+        }
         handleSelfMessage(msg);
+    }
     else if (msg->getArrivalGateId() == upperLayerInGateId) {
         handleUpperPacket(check_and_cast<Packet *>(msg));
     }
@@ -117,7 +141,6 @@ void EtherMacPFC::handleMessageWhenUp(cMessage *msg)
         auto signal = check_and_cast<EthernetSignal *>(msg);
         auto packet = check_and_cast<Packet *>(signal->decapsulate());
         ingress = packet->addTag<ingressTag>();
-//        EV_INFO << "Packet" << packet << "Entering eth " << ind << "\n";
         ingress->setIngressPort(ind);
         signal->encapsulate(packet);
 
@@ -132,6 +155,7 @@ void EtherMacPFC::handleMessageWhenUp(cMessage *msg)
     processAtHandleMessageFinished();
     printState();
 }
+
 
 void EtherMacPFC::handleUpperPacket(Packet *packet)
 {
@@ -172,7 +196,7 @@ void EtherMacPFC::handleUpperPacket(Packet *packet)
         emit(packetDroppedSignal, packet, &details);
         numDroppedPkFromHLIfaceDown++;
         delete packet;
-
+        EV_DETAIL << "!!!FUCK\n";
         return;
     }
 
@@ -201,23 +225,15 @@ void EtherMacPFC::handleUpperPacket(Packet *packet)
     //EV_INFO << "!!!ind: " << ind << "\n";
     // 统计发送的包的总数
     router->total_packet_count++;
-    // 首先判断是否应该丢包
-    if (router->CheckIngressAdmission(ind, 0, packetsize) && router->CheckEgressAdmission(ind, 0, packetsize)){           // Admission control
-        router->UpdateIngressAdmission(ind, 0, packetsize);
-        router->UpdateEgressAdmission(ind, 0, packetsize);
-    }else{
-        router->drop_packet_count++; // TODO 重新设计Drop
-        numDroppedBitError++;
-        PacketDropDetails details;
-        details.setReason(INCORRECTLY_RECEIVED);
-        emit(packetDroppedSignal, packet, &details);
-        delete packet;
-        return;
-    }
+    router->UpdateIngressAdmission(ind, 0, packetsize);
+    router->UpdateEgressAdmission(ind, 0, packetsize);
     // 判断是否发送pause
-    if (router->CheckShouldPause(ind,0))
+    //EV_INFO << "!!!PFC_PAUSE"<<router->CheckShouldPause(ind,0)<<"\n";
+    if (router->CheckShouldPause(ind,0)){
+        EV_INFO << "***PFC_PAUSE"<<"\n";
         router->SetPause(ind,0);
         inEthMac->sendPause(PFC_PAUSE);
+    }
     //if (router->getCounter(ind) >= queue_threshold) inEthMac->sendPause(PFC_PAUSE);
     if (!currentTxFrame && !txQueue->isEmpty())
     {
@@ -227,15 +243,23 @@ void EtherMacPFC::handleUpperPacket(Packet *packet)
         //router->updateCounter(ind, -packetsize);
         //if (router->getCounter(ind) < queue_threshold) inEthMac->sendPause(PFC_RESUME);
         // 判断是否resume
-        if (router->CheckShouldResume(ind,0))
+        if (router->CheckShouldResume(ind,0)){
             router->SetResume(ind,0);
             inEthMac->sendPause(PFC_RESUME);
+            EV_INFO << "***PFC_RESUME"<<"\n";
+        }
     }
     // TODO 设计ECN拥塞控制
+    for (int i=0; i < router->pCnt; ++i)
+    {
+        if(router->ShouldSendCN(i,0)) router->isJam[i] = 0;
+    }
 
 
     if ((duplexMode || receiveState == RX_IDLE_STATE) && transmitState == TX_IDLE_STATE) {
         EV_DETAIL << "No incoming carrier signals detected, frame clear to send\n";
         startFrameTransmission();
+        // 用map记录收到端口与包的映射关系,便于后续释放内存
+        msg_map.insert(std::make_pair(static_cast<uint32_t>(packet->getId()), std::make_pair(static_cast<uint32_t>(ind),static_cast<uint32_t>(packetsize))));
     }
 }
